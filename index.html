@@ -712,7 +712,7 @@
             Object.keys(otherPlayers).forEach(key => {
                 const p = otherPlayers[key];
                 if (!p || !p.group) return;
-                if(now - p.lastUpdate > 400000) { scene.remove(p.group); delete otherPlayers[key]; return; }
+                if(now - p.lastUpdate > 120000) { scene.remove(p.group); delete otherPlayers[key]; return; }
                 p.group.position.lerp(p.targetPos, 0.1);
                 p.group.rotation.y += (p.targetRot - p.group.rotation.y) * 0.1;
                 const dist = p.group.position.distanceTo(p.targetPos);
