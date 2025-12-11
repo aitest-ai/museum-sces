@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+    <title>永續金門美術館</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Microsoft JhengHei', sans-serif; background-color: #000; user-select: none; -webkit-user-select: none; }
+        
+        #start-screen {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: #111; color: #ddd;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            z-index: 2000; transition: opacity 0.8s ease-out;
+        }
+        h1 { font-weight: 300; letter-spacing: 8px; margin: 0; color: #c0a060; text-transform: uppercase; }
+        .subtitle { letter-spacing: 3px; color: #888; font-size: 14px; margin-top: 15px; margin-bottom: 30px; }
+        
+        #name-input {
+            background: transparent; border: none; border-bottom: 2px solid #555;
+            color: #fff; font-size: 20px; text-align: center; padding: 10px;
+            width: 250px; outline: none; margin-bottom: 20px; letter-spacing: 1px;
+            transition: border-color 0.3s;
+        }
+        #name-input:focus { border-bottom-color: #c0a060; }
+        #name-input::placeholder { color: #444; }
+
+        #start-btn {
+            background: transparent; color: #c0a060; border: 1px solid #c0a060; padding: 12px 50px;
+            font-size: 15px; font-weight: bold; cursor: pointer;
+            border-radius: 2px; transition: all 0.3s; letter-spacing: 2px;
+            opacity: 0.5; pointer-events: none;
+        }
+        #start-btn.active { opacity: 1; pointer-events: auto; background: rgba(192, 160, 96, 0.1); }
+        #start-btn.active:hover { background: #c0a060; color: #000; }
+
+        #loading-text { color: #666; font-size: 12px; margin-top: 15px; letter-spacing: 1px; min-height: 15px; }
+
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 10; }
+        
+        #crosshair {
+            position: absolute; top: 50%; left: 50%; width: 4px; height: 4px;
+            background: rgba(255,255,255,0.9); border-radius: 50%;
+            box-shadow: 0 0 4px rgba(0,0,0,0.5);
+            transform: translate(-50%, -50%); pointer-events: none; display: none;
+        }
+
+        #interaction-prompt {
+            position: absolute; bottom: 20%; left: 50%; transform: translateX(-50%);
+            background: rgba(20, 20, 20, 0.9); color: #c0a060; padding: 10px 25px;
+            font-size: 14px; border-radius: 30px; border: 1px solid #444;
+            display: none; pointer-events: auto; cursor: pointer;
+            backdrop-filter: blur(4px);
+        }
+
+        #upload-status {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.9); color: #fff; padding: 20px 40px;
+            border-radius: 10px; border: 2px solid #c0a060;
+            font-size: 18px; display: none; z-index: 5000;
+            text-align: center; box-shadow: 0 0 20px rgba(0,0,0,0.8);
+            white-space: pre-line;
+        }
+
+        #status { position: absolute; top: 20px; left: 20px; color: rgba(255,255,255,0.4); font-size: 12px; display: none; }
+
+        #joystick-zone {
+            position: absolute; bottom: 40px; left: 30px; width: 120px; height: 120px;
+            background: rgba(255,255,255,0.08); border-radius: 50%; border: 1px solid rgba(255,255,255,0.1);
+            pointer-events: auto; touch-action: none; display: none;
+        }
+        #joystick-knob {
+            position: absolute; top: 50%; left: 50%; width: 50px; height: 50px;
+            background: rgba(255,255,255,0.2); border-radius: 50%;
+            transform: translate(-50%, -50%); pointer-events: none;
+        }
+        #look-zone {
+            position: absolute; top: 0; right: 0; width: 50%; height: 100%;
+            pointer-events: auto; touch-action: none; display: none;
+        }
+
+        #upload-input { display: none; }
+    </style>
+</head>
+<body>
+
+    <div id="start-screen">
+        <h1>永續金門美術館</h1>
+        <p class="subtitle">英雄故事策展計畫</p>
+        <input type="text" id="name-input" placeholder="請輸入您的名稱" maxlength="10" autocomplete="off">
+        <button id="start-btn">進入展場</button>
+        <div id="loading-text"></div>
+    </div>
+
+    <div id="ui-layer">
+        <div id="status">● 連線中...</div>
+        <div id="crosshair"></div>
+        <div id="interaction-prompt">點擊上傳作品</div>
+        <div id="upload-status"></div>
+    </div>
+
+    <div id="joystick-zone"><div id="joystick-knob"></div></div>
+    <div id="look-zone"></div>
+    <input type="file" id="upload-input" accept="image/*">
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, setDoc, deleteDoc, getDoc, getDocs, query, where, onSnapshot, serverTimestamp, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // ========================================================
+        // 🔧 1. Firebase 設定
+        // ========================================================
+        const firebaseConfig = {
+            apiKey: "AIzaSyDaGMHRgBJrvq5iUuKKeek_NuWugXm49q8",
+            authDomain: "museum-e2b65.firebaseapp.com",
+            projectId: "museum-e2b65",
+            storageBucket: "museum-e2b65.firebasestorage.app",
+            messagingSenderId: "661966638448",
+            appId: "1:661966638448:web:bed01f9878d622a72293b5",
+            measurementId: "G-7VG8XD4CZL"
+        };
+
+        // ========================================================
+        // ☁️ 2. Cloudinary 設定
+        // ========================================================
+        const CLOUDINARY_CLOUD_NAME = "dl5upflch"; 
+        const CLOUDINARY_UPLOAD_PRESET = "museum111"; 
+
+        // --------------------------------------------------------
+        
+        let appId = 'smart-museum-v30-partitions'; 
+        let app, auth, db;
+
+        try {
+            app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+        } catch (e) {
+            console.error("Firebase 初始化失敗:", e);
+            alert("Firebase 設定有誤，請按 F12 檢查 Config。");
+        }
+
+        let currentUser = null;
+        let myName = "Guest";
+        let myColor = new THREE.Color().setHSL(Math.random(), 0.6, 0.5).getHexString();
+        let isRunning = false;
+
+        const startScreen = document.getElementById('start-screen');
+        const nameInput = document.getElementById('name-input');
+        const startBtn = document.getElementById('start-btn');
+        const loadingText = document.getElementById('loading-text');
+        
+        const statusEl = document.getElementById('status');
+        const promptEl = document.getElementById('interaction-prompt');
+        const uploadInput = document.getElementById('upload-input');
+        const uploadStatus = document.getElementById('upload-status');
+        const joystickZone = document.getElementById('joystick-zone');
+        const joystickKnob = document.getElementById('joystick-knob');
+        const crosshair = document.getElementById('crosshair');
+        const lookZone = document.getElementById('look-zone');
+
+        nameInput.addEventListener('input', () => {
+            if(nameInput.value.trim().length > 0) startBtn.classList.add('active');
+            else startBtn.classList.remove('active');
+        });
+
+        startBtn.addEventListener('click', async () => {
+            if (!nameInput.value.trim()) return;
+            myName = nameInput.value.trim();
+            startBtn.style.display = 'none';
+            nameInput.style.display = 'none';
+            loadingText.innerText = "正在連線到美術館...";
+
+            if(!isRunning) {
+                window.addEventListener('resize', onResize);
+                
+                // 1. 優先建立 3D 場景 (確保 camera 存在)
+                init3D(); 
+                isRunning = true;
+
+                // 2. 監聽 Firebase 登入狀態 (現在 camera 已經安全了)
+                onAuthStateChanged(auth, u => { 
+                    if(u) { 
+                        currentUser=u; 
+                        statusEl.innerText=`● ${myName} (線上)`; 
+                        statusEl.style.color="#c0a060"; 
+                        
+                        // 隨機出生
+                        const spawn = getSafeSpawnPoint();
+                        if(camera) { // 雙重保險
+                            camera.position.set(spawn.x, spawn.y, spawn.z);
+                            camera.rotation.y = spawn.r;
+                        }
+
+                        setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'objects', `p_${u.uid}`), 
+                            { x:spawn.x, y:spawn.y, z:spawn.z, ry:spawn.r, name:myName, c:'#'+myColor, t:Date.now() }
+                        ).then(startNetworkSync);
+                    } 
+                });
+
+                // 3. 執行登入
+                await initAuth();
+            }
+
+            setTimeout(() => {
+                startScreen.style.opacity = 0;
+                setTimeout(() => startScreen.style.display='none', 600);
+                statusEl.style.display='block';
+                joystickZone.style.display='block';
+                lookZone.style.display='block';
+                crosshair.style.display='block'; 
+            }, 1000);
+        });
+
+        // --- 3D Scene ---
+        let scene, camera, renderer;
+        let otherPlayers = {};
+        let artFrames = [];
+        let colliders = [];
+        let raycaster;
+        let targetFrame = null;
+        let moveVector = new THREE.Vector3();
+        let lookEuler = new THREE.Euler(0,0,0,'YXZ');
+        let joystickActive=false, lookActive=false, lastLookX=0, lastLookY=0;
+        let isDragging = false; 
+
+        const WALL_T = 1.2;
+        const FRAME_OFF = WALL_T / 2 + 0.15; 
+
+        function onResize() {
+            if(camera && renderer) {
+                camera.aspect = window.innerWidth / window.innerHeight; 
+                camera.updateProjectionMatrix(); 
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            }
+        }
+
+        // 隨機出生點
+        function getSafeSpawnPoint() {
+            const spawns = [
+                { x: 0, z: 0, r: 0 },       // 中央
+                { x: 28, z: 6, r: -1.57 },  // 東側南廊
+                { x: 28, z: -6, r: -1.57 }, // 東側北廊
+                { x: -16, z: 0, r: 1.57 }   // 西側
+            ];
+            const pick = spawns[Math.floor(Math.random() * spawns.length)];
+            return {
+                x: pick.x + (Math.random() - 0.5) * 3, 
+                y: 2.55, 
+                z: pick.z + (Math.random() - 0.5) * 3,
+                r: pick.r
+            };
+        }
+
+        function init3D() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x181818); 
+            scene.fog = new THREE.Fog(0x181818, 0, 75); 
+
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 120);
+            camera.rotation.order = 'YXZ';
+            camera.position.set(0, 2.55, 0); 
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            renderer.outputEncoding = THREE.sRGBEncoding;
+            document.body.appendChild(renderer.domElement);
+
+            const ambient = new THREE.AmbientLight(0xffffff, 0.6); 
+            scene.add(ambient);
+            const sun = new THREE.DirectionalLight(0xfff0dd, 0.7);
+            sun.position.set(20, 50, 20); sun.castShadow = true; sun.shadow.mapSize.set(2048,2048);
+            scene.add(sun);
+            const fill = new THREE.DirectionalLight(0xddeeff, 0.3);
+            fill.position.set(-20, 30, -20); scene.add(fill);
+
+            buildSceneV30(); 
+
+            raycaster = new THREE.Raycaster();
+            setupControls();
+            
+            window.addEventListener('beforeunload', () => {
+                if(currentUser) {
+                    const pDoc = doc(db, 'artifacts', appId, 'public', 'data', 'objects', `p_${currentUser.uid}`);
+                    deleteDoc(pDoc);
+                }
+            });
+
+            animate();
+        }
+
+        function buildSceneV30() {
+            const matWood = new THREE.MeshStandardMaterial({ color: 0x5d4037, roughness: 0.4 }); 
+            const matWall = new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.9 });
+            const matCeil = new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 1.0 });
+            const matRugMain = new THREE.MeshStandardMaterial({ color: 0x3e2723, roughness: 0.95 });
+            const matRugRotunda = new THREE.MeshStandardMaterial({ color: 0x4e342e, roughness: 0.95 });
+
+            const floor = new THREE.Mesh(new THREE.PlaneGeometry(200, 160), matWood);
+            floor.rotation.x = -Math.PI/2; floor.receiveShadow = true; scene.add(floor);
+            const ceil = new THREE.Mesh(new THREE.PlaneGeometry(200, 160), matCeil);
+            ceil.rotation.x = Math.PI/2; ceil.position.y = 8; scene.add(ceil);
+
+            const addRug = (x, z, w, h, mat) => {
+                const rug = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+                rug.rotation.x = -Math.PI/2; rug.position.set(x, 0.02, z); rug.receiveShadow = true; scene.add(rug);
+            };
+            addRug(0, 0, 16, 16, matRugMain); 
+            addRug(32, 0, 30, 20, matRugMain); 
+            addRug(26, -20, 10, 12, matRugMain); 
+            addRug(26, 20, 10, 12, matRugMain);
+            addRug(-16, 0, 12, 20, matRugMain);
+            addRug(54, 0, 10, 10, matRugRotunda);
+
+            const addWall = (x, z, w, h, r) => {
+                const geo = new THREE.BoxGeometry(w, h, WALL_T);
+                const mesh = new THREE.Mesh(geo, matWall);
+                mesh.position.set(x, h/2, z); mesh.rotation.y = r;
+                scene.add(mesh);
+                colliders.push(new THREE.Box3().setFromObject(mesh));
+            };
+
+            // 1. 中央大廳
+            addWall(-10, -12, 12, 8, 0); addWall(10, -12, 12, 8, 0);  
+            addWall(-10, 12, 12, 8, 0); addWall(10, 12, 12, 8, 0);
+            addWall(-16, -10, 12, 8, Math.PI/2); addWall(-16, 10, 12, 8, Math.PI/2);
+            addWall(16, -10, 12, 8, Math.PI/2); addWall(16, 10, 12, 8, Math.PI/2);
+
+            addArt('Hall_N_L', -10, 4, -12 + FRAME_OFF, 0, 3.5, 3.5);
+            addArt('Hall_N_R', 10, 4, -12 + FRAME_OFF, 0, 3.5, 3.5);
+            addArt('Hall_S_L', -10, 4, 12 - FRAME_OFF, Math.PI, 3.5, 3.5);
+            addArt('Hall_S_R', 10, 4, 12 - FRAME_OFF, Math.PI, 3.5, 3.5);
+            
+            addArt('Hall_W_Top', -16 + FRAME_OFF, 4, -7.5, Math.PI/2, 3.5, 3.5);
+            addArt('Hall_W_Bot', -16 + FRAME_OFF, 4, 7.5, Math.PI/2, 3.5, 3.5);
+            addArt('Hall_E_Top', 16 - FRAME_OFF, 4, -9, -Math.PI/2, 3.5, 3.5);
+            addArt('Hall_E_Bot', 16 - FRAME_OFF, 4, 9, -Math.PI/2, 3.5, 3.5);
+
+            addWall(0, 5, 8, 5, 0); 
+            addArt('Center_S', 0, 3.5, 5 + FRAME_OFF, 0, 3.5, 2.5);
+            addArt('Center_N', 0, 3.5, 5 - FRAME_OFF, Math.PI, 3.5, 2.5);
+
+            // 2. 東側寬畫廊
+            addWall(21.1, -15, 11, 8, 0); 
+            addWall(21.1, 15, 11, 8, 0);  
+
+            addWall(43.4, -15, 20, 8, 0); 
+            addWall(43.4, 15, 20, 8, 0);  
+
+            addArt('Wide_N_1', 22, 4, -15 + FRAME_OFF, 0, 3.5, 3.5); 
+            addArt('Wide_N_2', 36, 4, -15 + FRAME_OFF, 0, 3.5, 3.5); 
+            addArt('Wide_N_3', 42, 4, -15 + FRAME_OFF, 0, 3.5, 3.5);
+            addArt('Wide_N_4', 48, 4, -15 + FRAME_OFF, 0, 3.5, 3.5);
+
+            addArt('Wide_S_1', 22, 4, 15 - FRAME_OFF, Math.PI, 3.5, 3.5); 
+            addArt('Wide_S_2', 36, 4, 15 - FRAME_OFF, Math.PI, 3.5, 3.5); 
+            addArt('Wide_S_3', 42, 4, 15 - FRAME_OFF, Math.PI, 3.5, 3.5);
+            addArt('Wide_S_4', 48, 4, 15 - FRAME_OFF, Math.PI, 3.5, 3.5);
+
+            addWall(32, 0, 10, 6, 0); 
+            addArt('Mid_1_N_L', 30, 4, -0 - FRAME_OFF, Math.PI, 3, 3);
+            addArt('Mid_1_N_R', 34, 4, -0 - FRAME_OFF, Math.PI, 3, 3);
+            addArt('Mid_1_S_L', 30, 4, 0 + FRAME_OFF, 0, 3, 3);      
+            addArt('Mid_1_S_R', 34, 4, 0 + FRAME_OFF, 0, 3, 3);      
+
+            addWall(26, -20, 10, 8, Math.PI/2); 
+            addWall(34, -20, 10, 8, Math.PI/2); 
+            addWall(30, -25, 8, 8, 0);
+            addArt('Alc_N_W', 26 + FRAME_OFF, 4, -20, Math.PI/2, 3, 3);
+            addArt('Alc_N_E', 34 - FRAME_OFF, 4, -20, -Math.PI/2, 3, 3);
+            addArt('Alc_N_B', 30, 4, -25 + FRAME_OFF, 0, 4, 3);
+
+            addWall(26, 20, 10, 8, Math.PI/2); 
+            addWall(34, 20, 10, 8, Math.PI/2); 
+            addWall(30, 25, 8, 8, 0);
+            addArt('Alc_S_W', 26 + FRAME_OFF, 4, 20, Math.PI/2, 3, 3);
+            addArt('Alc_S_E', 34 - FRAME_OFF, 4, 20, -Math.PI/2, 3, 3);
+            addArt('Alc_S_B', 30, 4, 25 - FRAME_OFF, Math.PI, 4, 3);
+
+            // 3. 圓廳
+            addWall(52, -10.5, 9, 8, Math.PI/2); addWall(52, 10.5, 9, 8, Math.PI/2);
+            const cx=60, cz=0, rad=9, seg=12;
+            for(let i=0; i<seg; i++) {
+                const a = (i/seg)*Math.PI*2;
+                if(a > Math.PI*0.8 && a < Math.PI*1.2) continue;
+                addWall(cx+Math.cos(a)*rad, cz+Math.sin(a)*rad, (Math.PI*2*rad)/seg + 0.6, 8, -a+Math.PI/2);
+                addArt(`Rot_${i}`, cx+Math.cos(a)*(rad-0.65), 4, cz+Math.sin(a)*(rad-0.65), -a+Math.PI*1.5, 3.0, 4.2);
+            }
+
+            // 4. 西側大廳
+            addWall(-22.5, -15, 25, 8, 0); 
+            addWall(-22.5, 15, 25, 8, 0);
+            
+            addArt('WH_N_1', -13, 4, -15 + FRAME_OFF, 0, 3.5, 3.5);
+            addArt('WH_N_2', -19, 4, -15 + FRAME_OFF, 0, 3.5, 3.5);
+            addArt('WH_S_1', -13, 4, 15 - FRAME_OFF, Math.PI, 3.5, 3.5);
+            addArt('WH_S_2', -19, 4, 15 - FRAME_OFF, Math.PI, 3.5, 3.5);
+
+            // 5. 迷宮
+            const mx = -22.5; 
+            addWall(-23, 10, 15, 8, 0); addWall(-23, -10, 15, 8, 0);  
+            addWall(-35, 0, 40, 8, Math.PI/2); addWall(mx, -20, 25, 8, 0); addWall(mx, 20, 25, 8, 0)
+
+            addArt('Maze_Far_W', -35 + FRAME_OFF, 4, 0, Math.PI/2, 6.0, 3.5);
+            
+            addWall(-23, -5, 15, 8, 0); addWall(-23, 5, 15, 8, 0);  
+            addArt('Maze_Div_1', mx, 4, -5 - FRAME_OFF, Math.PI, 3.5, 3.5);
+            addArt('Maze_Div_2', mx, 4, -5 + FRAME_OFF, 0, 3.5, 3.5); 
+            addArt('Maze_Div_3', mx, 4, 5 - FRAME_OFF, Math.PI, 3.5, 3.5);
+            addArt('Maze_Div_4', mx, 4, 5 + FRAME_OFF, 0, 3.5, 3.5);
+
+            // 6. 北翼
+            addWall(-10, -26, 28, 8, Math.PI/2); addWall(10, -26, 28, 8, Math.PI/2); addWall(0, -40, 20, 8, 0);
+            addArt('NW_W1', -10 + FRAME_OFF, 4, -20, Math.PI/2, 3.5, 3.5);
+            addArt('NW_W2', -10 + FRAME_OFF, 4, -30, Math.PI/2, 3.5, 3.5);
+            addArt('NW_E1', 10 - FRAME_OFF, 4, -20, -Math.PI/2, 3.5, 3.5);
+            addArt('NW_E2', 10 - FRAME_OFF, 4, -30, -Math.PI/2, 3.5, 3.5);
+            addArt('NW_End', 0, 4, -40 + FRAME_OFF, 0, 5, 3.5);
+
+            // 7. 南翼
+            addWall(-10, 26, 28, 8, Math.PI/2); addWall(10, 26, 28, 8, Math.PI/2); addWall(0, 40, 20, 8, 0);
+            addArt('SW_W1', -10 + FRAME_OFF, 4, 20, Math.PI/2, 3.5, 3.5);
+            addArt('SW_W2', -10 + FRAME_OFF, 4, 30, Math.PI/2, 3.5, 3.5);
+            addArt('SW_E1', 10 - FRAME_OFF, 4, 20, -Math.PI/2, 3.5, 3.5);
+            addArt('SW_E2', 10 - FRAME_OFF, 4, 30, -Math.PI/2, 3.5, 3.5);
+            addArt('SW_End', 0, 4, 40 - FRAME_OFF, Math.PI, 5, 3.5);
+        }
+
+        function addArt(id, x, y, z, ry, w=3.4, h=3.4) {
+            const fGeo = new THREE.BoxGeometry(w, h, 0.15);
+            const fMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.6, metalness: 0.2 });
+            const frame = new THREE.Mesh(fGeo, fMat);
+            frame.position.set(x, y, z); frame.rotation.y = ry;
+            scene.add(frame);
+
+            const cGeo = new THREE.PlaneGeometry(w-0.4, h-0.4);
+            const cMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+            const canvas = new THREE.Mesh(cGeo, cMat);
+            const offset = 0.1; 
+            canvas.position.set(x + Math.sin(ry)*offset, y, z + Math.cos(ry)*offset);
+            canvas.rotation.y = ry;
+            canvas.userData = { id: id, isCanvas: true };
+            scene.add(canvas);
+            artFrames.push(canvas);
+
+            if(Math.random() > 0.4) {
+                const spot = new THREE.SpotLight(0xfff0e0, 1.0);
+                spot.position.set(x + Math.sin(ry)*6, 9, z + Math.cos(ry)*6);
+                spot.target = canvas;
+                spot.angle = 0.5; spot.penumbra = 0.5; spot.distance = 25;
+                scene.add(spot); scene.add(spot.target);
+            }
+        }
+
+        async function initAuth() {
+            try {
+                await signInAnonymously(auth);
+            } catch(e){
+                console.error("Auth Error:", e);
+                statusEl.innerText = "● 連線失敗"; statusEl.style.color = "red";
+                alert("連線失敗！請檢查網域設定或 Firebase 規則。");
+            }
+        }
+
+        function startNetworkSync() {
+            let lastX=0, lastZ=0, lastRy=0;
+            
+            onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'objects'), s => {
+                s.docChanges().forEach(c => {
+                    const d = c.doc.data(); const id = c.doc.id;
+                    if(c.type === 'removed') {
+                        if(id.startsWith('p_') && otherPlayers[id]) {
+                            scene.remove(otherPlayers[id].group);
+                            delete otherPlayers[id];
+                        }
+                    } else {
+                        if(id.startsWith('a_')) updateArt(id.replace('a_',''), d.img);
+                        if(id.startsWith('p_') && id !== `p_${currentUser.uid}`) updatePlayer(id, d);
+                    }
+                });
+            });
+
+            setInterval(() => {
+                if(!currentUser) return;
+                const p = camera.position; const ry = camera.rotation.y;
+                if (Math.abs(p.x - lastX) > 0.1 || Math.abs(p.z - lastZ) > 0.1) {
+                    setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'objects', `p_${currentUser.uid}`), 
+                        { x: parseFloat(p.x.toFixed(2)), z: parseFloat(p.z.toFixed(2)), ry: parseFloat(ry.toFixed(2)), name: myName, c:'#'+myColor, t: Date.now() }
+                    ).catch(e => console.warn("位置同步失敗", e));
+                    lastX = p.x; lastZ = p.z; lastRy = ry;
+                }
+            }, 500);
+        }
+
+        function createMinecraftChar(colorHex) {
+            const group = new THREE.Group();
+            const color = new THREE.Color(colorHex);
+            const matBody = new THREE.MeshStandardMaterial({ color: color });
+            const matSkin = new THREE.MeshStandardMaterial({ color: 0xffccaa });
+            const matDark = new THREE.MeshStandardMaterial({ color: 0x333333 });
+
+            const head = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), matSkin);
+            head.position.y = 1.6; group.add(head);
+
+            const body = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.6, 0.2), matBody);
+            body.position.y = 1.1; group.add(body);
+
+            const armL = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.6, 0.12), matSkin);
+            armL.position.y = -0.2; 
+            const armLGroup = new THREE.Group(); armLGroup.add(armL);
+            armLGroup.position.set(-0.28, 1.35, 0); group.add(armLGroup);
+
+            const armR = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.6, 0.12), matSkin);
+            armR.position.y = -0.2;
+            const armRGroup = new THREE.Group(); armRGroup.add(armR);
+            armRGroup.position.set(0.28, 1.35, 0); group.add(armRGroup);
+
+            const legL = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.7, 0.15), matDark);
+            legL.position.y = -0.35;
+            const legLGroup = new THREE.Group(); legLGroup.add(legL);
+            legLGroup.position.set(-0.1, 0.7, 0); group.add(legLGroup);
+
+            const legR = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.7, 0.15), matDark);
+            legR.position.y = -0.35;
+            const legRGroup = new THREE.Group(); legRGroup.add(legR);
+            legRGroup.position.set(0.1, 0.7, 0); group.add(legRGroup);
+
+            group.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
+            
+            group.scale.set(1.5, 1.5, 1.5); 
+
+            return { group, armL: armLGroup, armR: armRGroup, legL: legLGroup, legR: legRGroup, head };
+        }
+
+        function createNameLabel(name) {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = 256; canvas.height = 64;
+            ctx.fillStyle = "rgba(0, 0, 0, 0.5)"; ctx.roundRect(10, 10, 236, 44, 20); ctx.fill();
+            ctx.fillStyle = "white"; ctx.font = "bold 32px Arial"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+            ctx.fillText(name, 128, 32);
+
+            const tex = new THREE.CanvasTexture(canvas);
+            const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+            const sprite = new THREE.Sprite(mat);
+            sprite.scale.set(1.5 * 1.5, 0.375 * 1.5, 1);
+            sprite.position.y = 2.1; 
+            return sprite;
+        }
+
+        function updatePlayer(id, d) {
+            if(!otherPlayers[id]) {
+                const char = createMinecraftChar(d.c || '#ffffff');
+                const label = createNameLabel(d.name || 'Unknown');
+                char.group.add(label);
+                scene.add(char.group);
+                otherPlayers[id] = { 
+                    ...char, 
+                    targetPos: new THREE.Vector3(d.x, 0, d.z),
+                    targetRot: d.ry,
+                    lastUpdate: Date.now()
+                };
+            }
+            const p = otherPlayers[id];
+            
+            if (!p || !p.group) return;
+
+            p.targetPos.set(d.x, 0, d.z);
+            p.targetRot = d.ry;
+            p.lastUpdate = Date.now(); 
+        }
+        
+        function updateArt(fid, src) {
+            const f = artFrames.find(x => x.userData.id===fid);
+            if(f && src) {
+                const loader = new THREE.TextureLoader();
+                loader.setCrossOrigin('anonymous');
+                loader.load(src, t=>{ 
+                    t.encoding=THREE.sRGBEncoding; 
+                    f.material.map=t; 
+                    f.material.color.setHex(0xffffff);
+                    f.material.needsUpdate=true; 
+                }, undefined, (e) => console.warn("圖片載入警告", e));
+            }
+        }
+
+        promptEl.addEventListener('click', ()=>targetFrame && uploadInput.click());
+        
+        uploadInput.addEventListener('change', async e => {
+            if(!e.target.files[0] || !targetFrame) return;
+
+            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'objects', `a_${targetFrame.userData.id}`);
+            
+            try {
+                const snapshot = await getDoc(docRef);
+                if (snapshot.exists() && snapshot.data().img) {
+                    alert(`⛔ 這裡不能畫喔！這幅畫已經有主人了。`);
+                    uploadInput.value = "";
+                    return;
+                }
+
+                const collectionRef = collection(db, 'artifacts', appId, 'public', 'data', 'objects');
+                const q = query(collectionRef, where("ownerId", "==", currentUser.uid));
+                const querySnapshot = await getDocs(q);
+                // ★ 限額 5 張
+                if (querySnapshot.size >= 5) {
+                    alert(`🎨 您已經展出 5 幅作品囉！請去欣賞別人的作品吧！`);
+                    uploadInput.value = "";
+                    return;
+                }
+
+                uploadStatus.innerHTML = "☁️ 正在上傳中...<br><span style='font-size:12px'>(請稍候...)</span>";
+                uploadStatus.style.display = 'block';
+
+                const file = e.target.files[0];
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET); 
+
+                const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`, {
+                    method: 'POST', body: formData
+                });
+
+                if(!res.ok) {
+                    const errDetail = await res.json();
+                    alert(`圖片上傳失敗！請檢查 Upload Preset 設定。`);
+                    uploadInput.value="";
+                    return;
+                }
+
+                const data = await res.json();
+                const imageUrl = data.secure_url;
+
+                await setDoc(docRef, { 
+                    img: imageUrl, 
+                    ownerName: myName,
+                    ownerId: currentUser.uid, 
+                    uploadTime: serverTimestamp()
+                }, { merge: true });
+
+                uploadStatus.style.display = 'none'; 
+                alert(`✅ 上傳成功！\n作品已儲存。`);
+
+            } catch (err) {
+                uploadStatus.style.display = 'none';
+                console.error(err);
+                alert("❌ 上傳失敗，請檢查 Cloudinary 設定！");
+            }
+            
+            uploadInput.value="";
+        });
+
+        function setupControls() {
+            joystickZone.addEventListener('touchstart', e=>{joystickActive=true; updateJoy(e.touches[0]);}, {passive:false});
+            joystickZone.addEventListener('touchmove', e=>{if(joystickActive) updateJoy(e.touches[0]); e.preventDefault();}, {passive:false});
+            joystickZone.addEventListener('touchend', ()=>{joystickActive=false; joystickKnob.style.transform=`translate(-50%,-50%)`; moveVector.set(0,0,0);});
+            lookZone.addEventListener('touchstart', e=>{lookActive=true; lastLookX=e.touches[0].clientX; lastLookY=e.touches[0].clientY;}, {passive:false});
+            lookZone.addEventListener('touchmove', e=>{ if(lookActive) { const t = e.touches[0]; rotateCam(t.clientX-lastLookX, t.clientY-lastLookY); lastLookX=t.clientX; lastLookY=t.clientY; } e.preventDefault(); }, {passive:false});
+            lookZone.addEventListener('touchend', ()=>lookActive=false);
+            
+            document.addEventListener('keydown', e=>{
+                switch(e.key.toLowerCase()){
+                    case 'w': case 'arrowup': moveVector.z=-1; break;
+                    case 's': case 'arrowdown': moveVector.z=1; break;
+                    case 'a': case 'arrowleft': moveVector.x=-1; break;
+                    case 'd': case 'arrowright': moveVector.x=1; break;
+                }
+            });
+            document.addEventListener('keyup', e=>{
+                switch(e.key.toLowerCase()){
+                    case 'w': case 'arrowup': case 's': case 'arrowdown': moveVector.z=0; break;
+                    case 'a': case 'arrowleft': case 'd': case 'arrowright': moveVector.x=0; break;
+                }
+            });
+            document.addEventListener('mousedown', () => isDragging = true);
+            document.addEventListener('mouseup', () => isDragging = false);
+            document.addEventListener('mousemove', e => { if(isDragging && !joystickActive) rotateCam(e.movementX, e.movementY); });
+        }
+        function updateJoy(t) {
+            const r = joystickZone.getBoundingClientRect();
+            const dx = t.clientX-(r.left+r.width/2); const dy = t.clientY-(r.top+r.height/2);
+            const d = Math.sqrt(dx*dx+dy*dy); const f = d>40 ? 40/d : 1;
+            joystickKnob.style.transform = `translate(calc(-50% + ${dx*f}px), calc(-50% + ${dy*f}px))`;
+            moveVector.x=(dx*f)/40; moveVector.z=(dy*f)/40;
+        }
+        function rotateCam(dx, dy) {
+            lookEuler.setFromQuaternion(camera.quaternion);
+            lookEuler.y -= dx*0.0025; lookEuler.x -= dy*0.0025;
+            lookEuler.x = Math.max(-1.4, Math.min(1.4, lookEuler.x));
+            camera.quaternion.setFromEuler(lookEuler);
+        }
+        function animate() {
+            requestAnimationFrame(animate);
+            if(!isRunning) return;
+            const dt = clock.getDelta();
+            const now = Date.now();
+            if(moveVector.lengthSq()>0) {
+                const s = 4.0 * dt; 
+                const f = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion); f.y=0; f.normalize();
+                const r = new THREE.Vector3(1,0,0).applyQuaternion(camera.quaternion); r.y=0; r.normalize();
+                const next = camera.position.clone().addScaledVector(f, -moveVector.z*s).addScaledVector(r, moveVector.x*s);
+                const box = new THREE.Box3().setFromCenterAndSize(next, new THREE.Vector3(0.5,1,0.5));
+                let hit=false; for(let c of colliders) if(box.intersectsBox(c)) { hit=true; break; }
+                if(!hit) camera.position.copy(next);
+            }
+            Object.keys(otherPlayers).forEach(key => {
+                const p = otherPlayers[key];
+                if (!p || !p.group) return;
+                if(now - p.lastUpdate > 400000) { scene.remove(p.group); delete otherPlayers[key]; return; }
+                p.group.position.lerp(p.targetPos, 0.1);
+                p.group.rotation.y += (p.targetRot - p.group.rotation.y) * 0.1;
+                const dist = p.group.position.distanceTo(p.targetPos);
+                if(dist > 0.05) {
+                    const time = now * 0.01;
+                    p.legL.rotation.x = Math.sin(time) * 0.6;
+                    p.legR.rotation.x = -Math.sin(time) * 0.6;
+                    p.armL.rotation.x = -Math.sin(time) * 0.6;
+                    p.armR.rotation.x = Math.sin(time) * 0.6;
+                } else {
+                    p.legL.rotation.x = p.legR.rotation.x = 0;
+                    p.armL.rotation.x = p.armR.rotation.x = 0;
+                }
+            });
+            raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
+            const hits = raycaster.intersectObjects(artFrames);
+            if(hits.length>0 && hits[0].distance<8) {
+                if(targetFrame!==hits[0].object) { targetFrame=hits[0].object; promptEl.style.display='block'; promptEl.innerText = `更換畫作`; }
+            } else { targetFrame=null; promptEl.style.display='none'; }
+            renderer.render(scene, camera);
+        }
+        const clock = new THREE.Clock();
+        window.resetMuseum = async () => {
+            if(prompt("密碼：") !== "admin123") return alert("錯誤");
+            if(!confirm("確定清空？")) return;
+            const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'objects')); 
+            const snapshot = await getDocs(q);
+            const batch = writeBatch(db);
+            let count = 0;
+            snapshot.forEach(doc => { if(doc.id.startsWith('a_')) { batch.delete(doc.ref); count++; }});
+            if(count > 0) { await batch.commit(); alert("已清空！"); location.reload(); }
+        };
+    </script>
+</body>
+</html>
